@@ -20,7 +20,6 @@ ThisBuild / developers := List(
 ThisBuild / scmInfo := Some(
   ScmInfo(url("https://github.com/DevNico/cedar4s"), "scm:git:git@github.com:DevNico/cedar4s.git")
 )
-ThisBuild / sonatypeCredentialHost := "central.sonatype.com"
 
 // Dependency versions
 val cedarJavaVersion = "4.8.0"

@@ -46,7 +46,7 @@ jobs:
           PGP_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
 
       - name: Release
-        run: sbt sonatypeBundleRelease
+        run: sbt sonaRelease
         env:
           SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
           SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
