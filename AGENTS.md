@@ -118,6 +118,16 @@ The project is organized into these modules:
   - Provides `CaffeineEntityCache` for caching Cedar entities
   - Cross-compiled for Scala 2.13 and 3.x
 
+- **`observability-audit`** - Audit logging for Cedar authorization decisions
+  - Provides `AuditInterceptor`, `AuditLogger` interfaces
+  - Implementations: `JsonAuditLogger`, `Slf4jAuditLogger`, `FileAuditLogger`
+  - Cross-compiled for Scala 2.13 and 3.x
+
+- **`observability-otel`** - OpenTelemetry tracing integration
+  - Provides `OpenTelemetryInterceptor` for authorization span creation
+  - Configurable attribute filtering and span naming strategies
+  - Cross-compiled for Scala 2.13 and 3.x
+
 ### Development Modules
 
 - **`bench`** - JMH benchmarks for performance testing
