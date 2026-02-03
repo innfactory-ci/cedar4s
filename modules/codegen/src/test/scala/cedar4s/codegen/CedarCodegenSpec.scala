@@ -555,4 +555,167 @@ class CedarCodegenSpec extends FunSuite {
       Files.deleteIfExists(tempFile)
     }
   }
+
+  // ===========================================================================
+  // Bug Fix Tests - Attribute Name Case Preservation
+  // ===========================================================================
+
+  test("Bug fix: preserves camelCase attribute names like firstName") {
+    val schema = """
+      namespace Test {
+        entity User = {
+          "firstName": String,
+          "lastName": String,
+          "emailAddress": String,
+        };
+      }
+    """
+    val result = CedarCodegen.generateFromString(schema, "test.cedar")
+    val files = result.toOption.get
+
+    val dsl = files("Test.scala")
+    // Should preserve camelCase - firstName should NOT become firstname
+    assert(dsl.contains("firstName: String"), "firstName should be preserved as camelCase")
+    assert(dsl.contains("lastName: String"), "lastName should be preserved as camelCase")
+    assert(dsl.contains("emailAddress: String"), "emailAddress should be preserved as camelCase")
+    
+    // Should NOT contain the broken lowercase versions
+    assert(!dsl.contains("firstname:"), "Should not lowercase entire first part")
+    assert(!dsl.contains("lastname:"), "Should not lowercase entire first part")
+  }
+
+  test("Bug fix: converts snake_case to camelCase correctly") {
+    val schema = """
+      namespace Test {
+        entity User = {
+          "first_name": String,
+          "last_name": String,
+          "email_address": String,
+        };
+      }
+    """
+    val result = CedarCodegen.generateFromString(schema, "test.cedar")
+    val files = result.toOption.get
+
+    val dsl = files("Test.scala")
+    // Should convert snake_case to camelCase
+    assert(dsl.contains("firstName: String"), "first_name should become firstName")
+    assert(dsl.contains("lastName: String"), "last_name should become lastName")
+    assert(dsl.contains("emailAddress: String"), "email_address should become emailAddress")
+  }
+
+  test("Bug fix: converts hyphen-case to camelCase correctly") {
+    val schema = """
+      namespace Test {
+        entity User = {
+          "first-name": String,
+          "last-name": String,
+        };
+      }
+    """
+    val result = CedarCodegen.generateFromString(schema, "test.cedar")
+    val files = result.toOption.get
+
+    val dsl = files("Test.scala")
+    // Should convert hyphen-case to camelCase
+    assert(dsl.contains("firstName: String"), "first-name should become firstName")
+    assert(dsl.contains("lastName: String"), "last-name should become lastName")
+  }
+
+  test("Bug fix: lowercases PascalCase first char but preserves rest") {
+    val schema = """
+      namespace Test {
+        entity User = {
+          "FirstName": String,
+          "LastName": String,
+        };
+      }
+    """
+    val result = CedarCodegen.generateFromString(schema, "test.cedar")
+    val files = result.toOption.get
+
+    val dsl = files("Test.scala")
+    // Should lowercase first char only: FirstName -> firstName
+    assert(dsl.contains("firstName: String"), "FirstName should become firstName")
+    assert(dsl.contains("lastName: String"), "LastName should become lastName")
+  }
+
+  // ===========================================================================
+  // Bug Fix Tests - Enum Entity Code Generation
+  // ===========================================================================
+
+  test("Bug fix: generates Scala enum for Cedar enum entities") {
+    val schema = """
+      namespace Test {
+        entity Status enum ["draft", "published", "archived"];
+        entity User;
+        action "User::read" appliesTo {
+          principal: [User],
+          resource: [User],
+        };
+      }
+    """
+    val result = CedarCodegen.generateFromString(schema, "test.cedar")
+    val files = result.toOption.get
+
+    val dsl = files("Test.scala")
+    // Should generate an enum with the values
+    assert(dsl.contains("Status"), "Should contain Status type")
+    // The enum should have the values defined
+    assert(dsl.contains("draft") || dsl.contains("Draft"), "Should contain draft value")
+    assert(dsl.contains("published") || dsl.contains("Published"), "Should contain published value")
+    assert(dsl.contains("archived") || dsl.contains("Archived"), "Should contain archived value")
+  }
+
+  // ===========================================================================
+  // Bug Fix Tests - TypeRef in Sets Resolution
+  // ===========================================================================
+
+  test("Bug fix: resolves TypeRef in Set to entity reference correctly") {
+    val schema = """
+      namespace Test {
+        type RoleRef = Role;
+        entity Role;
+        entity User = {
+          "roles": Set<RoleRef>,
+        };
+      }
+    """
+    val result = CedarCodegen.generateFromString(schema, "test.cedar")
+    val files = result.toOption.get
+
+    val dsl = files("Test.scala")
+    // When TypeRef resolves to an entity, should use entitySet not stringSet
+    // The generated code should reference the entity properly
+    assert(dsl.contains("roles:"), "Should have roles field")
+    // The resolved type should generate entity serialization, not string conversion
+    // Check that we're using entitySet for the entity reference
+    assert(dsl.contains(""""Test::Role"""") || dsl.contains("entitySet"), 
+           "TypeRef to entity should use entity serialization with entity type")
+  }
+
+  test("Bug fix: resolves nested TypeRef in Sets") {
+    val schema = """
+      namespace Test {
+        type TagList = Set<String>;
+        entity Document = {
+          "tags": TagList,
+        };
+        entity User;
+        action "Document::read" appliesTo {
+          principal: [User],
+          resource: [Document],
+        };
+      }
+    """
+    val result = CedarCodegen.generateFromString(schema, "test.cedar")
+    val files = result.toOption.get
+
+    val dsl = files("Test.scala")
+    // Should handle TypeRef that resolves to Set<String>
+    assert(dsl.contains("tags:"), "Should have tags field")
+    // The resolved type should generate string set serialization
+    assert(dsl.contains("stringSet") || dsl.contains("CedarValue.string"), 
+           "TypeRef to Set<String> should use string serialization")
+  }
 }

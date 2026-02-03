@@ -108,6 +108,7 @@ object SchemaToIR {
       ownership = ownership,
       parentChain = parentChain,
       attributes = attributes,
+      enumValues = entity.enumValues,
       doc = entity.doc
     )
   }

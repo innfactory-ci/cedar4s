@@ -82,6 +82,8 @@ final case class CedarIR(
   *   Ordered list of parent entity names from root to immediate parent
   * @param attributes
   *   Entity attributes (for potential data class generation)
+  * @param enumValues
+  *   For enum entities, the allowed EID values (e.g., ["draft", "published", "archived"])
   * @param doc
   *   Documentation string
   */
@@ -90,6 +92,7 @@ final case class EntityIR(
     ownership: OwnershipType,
     parentChain: List[String],
     attributes: List[AttributeIR] = Nil,
+    enumValues: Option[List[String]] = None,
     doc: Option[String] = None
 ) {
 
@@ -98,6 +101,9 @@ final case class EntityIR(
 
   /** Is this a root entity? */
   def isRoot: Boolean = ownership == OwnershipType.Root
+
+  /** Is this an enum entity? */
+  def isEnum: Boolean = enumValues.isDefined
 
   /** Depth in hierarchy (0 for root) */
   def depth: Int = parentChain.length
@@ -216,13 +222,29 @@ final case class AttributeIR(
     resolvedType: cedar4s.schema.SchemaType
 ) {
 
-  /** Scala field name (camelCase, escaped if keyword) */
+  /** Scala field name (camelCase, escaped if keyword).
+    *
+    * Preserves existing camelCase in the first segment while handling hyphen/underscore
+    * separators. E.g.:
+    *   - "firstName" -> "firstName" (preserved)
+    *   - "first_name" -> "firstName" (converted to camelCase)
+    *   - "first-name" -> "firstName" (converted to camelCase)
+    *   - "FirstName" -> "firstName" (lowercased first char only)
+    */
   def fieldName: String = {
     val camel = name
       .split("[-_]")
       .zipWithIndex
       .map { case (part, i) =>
-        if (i == 0) part.toLowerCase else part.capitalize
+        if (i == 0) {
+          // For the first part, only lowercase the first character to preserve camelCase
+          // e.g., "firstName" stays "firstName", "FirstName" becomes "firstName"
+          if (part.isEmpty) part
+          else part.head.toLower + part.tail
+        } else {
+          // For subsequent parts, capitalize the first character
+          part.capitalize
+        }
       }
       .mkString
     if (ScalaKeywords.contains(camel)) s"`$camel`" else camel

@@ -643,6 +643,11 @@ $nestedClasses
   }
 
   private def renderEntityClass(entity: EntityIR, ir: CedarIR, namespace: String): String = {
+    // Handle enum entities differently - generate a Scala 3 enum
+    if (entity.isEnum) {
+      return renderEnumEntity(entity, namespace)
+    }
+
     val className = escapeIdent(entity.name) // Just "Xxx"
     val fullEntityType = s"$namespace::${entity.name}"
 
@@ -741,6 +746,70 @@ $nestedClasses
   }"""
   }
 
+  /** Render a Scala 3 enum for a Cedar enum entity.
+    *
+    * Cedar enum entities like:
+    * {{{
+    * entity Status enum ["draft", "published", "archived"];
+    * }}}
+    *
+    * Are rendered as Scala 3 enums:
+    * {{{
+    * enum Status(val value: String) {
+    *   case Draft extends Status("draft")
+    *   case Published extends Status("published")
+    *   case Archived extends Status("archived")
+    * }
+    * }}}
+    */
+  private def renderEnumEntity(entity: EntityIR, namespace: String): String = {
+    val className = escapeIdent(entity.name)
+    val fullEntityType = s"$namespace::${entity.name}"
+    val doc = entity.doc.map(d => s"  /** $d */\n").getOrElse("")
+
+    val enumValues = entity.enumValues.getOrElse(Nil)
+
+    // Generate enum cases - convert value to PascalCase for the case name
+    val cases = enumValues.map { value =>
+      val caseName = toPascalCaseEnum(value)
+      s"""    case $caseName extends $className("$value")"""
+    }.mkString("\n")
+
+    // Generate fromString method for parsing
+    val fromStringCases = enumValues.map { value =>
+      val caseName = toPascalCaseEnum(value)
+      s"""      case "$value" => Some($caseName)"""
+    }.mkString("\n")
+
+    s"""${doc}  enum $className(val value: String) {
+$cases
+
+    /** Convert to Cedar entity UID */
+    def toCedarEntityUid: CedarEntityUid = CedarEntityUid("$fullEntityType", value)
+  }
+
+  object $className {
+    /** Parse from string value */
+    def fromString(s: String): Option[$className] = s match {
+$fromStringCases
+      case _ => None
+    }
+
+    /** All enum values */
+    val values: List[$className] = List(${enumValues.map(v => toPascalCaseEnum(v)).mkString(", ")})
+
+    /** The Cedar entity type */
+    val entityType: String = "$fullEntityType"
+  }"""
+  }
+
+  /** Convert a string to PascalCase for enum case names.
+    * E.g., "draft" -> "Draft", "in-progress" -> "InProgress", "PUBLISHED" -> "Published"
+    */
+  private def toPascalCaseEnum(value: String): String = {
+    value.split("[-_]").map(_.toLowerCase.capitalize).mkString
+  }
+
   /** Render a nested case class for a record attribute.
     */
   private def renderNestedRecordClass(nested: NestedRecordIR, namespace: String, parentClassName: String): String = {
@@ -827,7 +896,13 @@ ${nested.attributes
           case SchemaType.Record(_) =>
             s"CedarValue.set($access.map(_.toCedarValue))"
           case SchemaType.TypeRef(_) =>
+            // TypeRef should normally be resolved before reaching here.
+            // If we hit this, it means the type couldn't be resolved.
             s"CedarValue.set($access.map(v => CedarValue.string(v.toString)))"
+          case SchemaType.SetOf(inner) =>
+            // Nested sets are unusual but handle gracefully
+            val innerExpr = renderCedarValueForType(inner, "v", namespace)
+            s"CedarValue.set($access.map(v => $innerExpr))"
         }
       case SchemaType.Record(_) =>
         s"$access.toCedarValue"
@@ -1746,106 +1821,12 @@ $resourceClass
 
     val entityClasses = entities
       .map { entity =>
-        val className = escapeIdent(entity.name) // Just "Xxx"
-        val fullEntityType = s"$namespace::${entity.name}"
-        val isPrincipal = principalTypes.contains(entity.name)
-
-        // Build field list: ID + parent IDs + attributes
-        // All IDs are now newtypes (generated in EntityIds.scala)
-        val idType = s"${entity.name}Id"
-        val idField = s"      id: $idType"
-
-        // Parent ID fields (immediate parent only, as that's what we need to resolve hierarchy)
-        val parentFields = entity.immediateParent.map { parentName =>
-          val parentType = s"${parentName}Id" // Generated newtype
-          s"      ${parentName.take(1).toLowerCase + parentName.drop(1)}Id: $parentType"
-        }.toList
-
-        // Attribute fields - for nested records, use the nested class name qualified with entity name
-        val attrFields = entity.attributes.map { attr =>
-          val scalaType = attr.nestedRecord match {
-            case Some(nested) =>
-              // Use the nested class name (it's declared inside the companion object)
-              val nestedType = s"$className.${nested.className}"
-              if (attr.optional) s"Option[$nestedType]" else nestedType
-            case None => attr.scalaType
-          }
-          s"      ${attr.fieldName}: $scalaType"
-        }
-
-        val allFields = (idField :: parentFields ++ attrFields).mkString(",\n")
-
-        val doc = entity.doc.map(d => s"    /** $d */\n").getOrElse("")
-
-        // Add PrincipalEntity trait extension if this is a principal
-        val principalExtension = if (isPrincipal) " extends PrincipalEntity" else ""
-
-        // All IDs are newtypes, so always use .value to extract string
-        val idToStringExpr = ".value"
-
-        // Build parent set for Cedar entity
-        val parentSet = entity.immediateParent match {
-          case Some(parentName) =>
-            val parentType = s"$namespace::$parentName"
-            val parentIdField = parentName.take(1).toLowerCase + parentName.drop(1) + "Id"
-            val quote = '"'
-            s"Set(CedarEntityUid($quote$parentType$quote, a.$parentIdField.value))"
-          case None =>
-            "Set.empty"
-        }
-
-        // Build attribute map
-        val attrMap = if (entity.attributes.nonEmpty) {
-          val attrs = entity.attributes.map { attr =>
-            val valueExpr = renderCedarValueExprWithPrefix("a.", attr, namespace, className)
-            val quote = '"'
-            s"$quote${attr.name}$quote -> $valueExpr"
-          }
-          s"Map(\n              ${attrs.mkString(",\n              ")}\n            )"
+        // Handle enum entities differently - generate a Scala 3 enum
+        if (entity.isEnum) {
+          renderEnumEntityForDsl(entity, namespace)
         } else {
-          "Map.empty"
+          renderRegularEntityForDsl(entity, namespace, principalTypes)
         }
-
-        // Build getParentIds
-        val parentExtraction = entity.immediateParent match {
-          case Some(parentName) =>
-            val parentType = s"$namespace::$parentName"
-            val parentIdField = parentName.take(1).toLowerCase + parentName.drop(1) + "Id"
-            val quote = '"'
-            s"List($quote$parentType$quote -> a.$parentIdField.value)"
-          case None =>
-            "Nil"
-        }
-
-        // Generate nested case classes for record attributes
-        val nestedClasses = entity.attributes
-          .flatMap(_.nestedRecord)
-          .map { nested =>
-            renderNestedRecordClass(nested, namespace, className)
-          }
-          .mkString("\n")
-
-        s"""${doc}    final case class $className(
-$allFields
-    )$principalExtension
-
-    object $className {
-$nestedClasses
-      /** CedarEntityType instance for automatic conversion and type-safe registration */
-      implicit val cedarEntityType: CedarEntityType.Aux[$className, $idType] = new CedarEntityType[$className] {
-        type Id = $idType
-        val entityType: String = "$fullEntityType"
-
-        def toCedarEntity(a: $className): CedarEntity = CedarEntity(
-          entityType = entityType,
-          entityId = a.id$idToStringExpr,
-          parents = $parentSet,
-          attributes = $attrMap
-        )
-
-        def getParentIds(a: $className): List[(String, String)] = $parentExtraction
-      }
-    }"""
       }
       .mkString("\n\n")
 
@@ -1876,6 +1857,154 @@ $nestedClasses
   object Entity {$principalTrait
 $entityClasses
   }"""
+  }
+
+  /** Render a Scala 3 enum entity for the DSL.
+    */
+  private def renderEnumEntityForDsl(entity: EntityIR, namespace: String): String = {
+    val className = escapeIdent(entity.name)
+    val fullEntityType = s"$namespace::${entity.name}"
+    val doc = entity.doc.map(d => s"    /** $d */\n").getOrElse("")
+
+    val enumValues = entity.enumValues.getOrElse(Nil)
+
+    // Generate enum cases - convert value to PascalCase for the case name
+    val cases = enumValues.map { value =>
+      val caseName = toPascalCaseEnum(value)
+      s"""      case $caseName extends $className("$value")"""
+    }.mkString("\n")
+
+    // Generate fromString method for parsing
+    val fromStringCases = enumValues.map { value =>
+      val caseName = toPascalCaseEnum(value)
+      s"""        case "$value" => Some($caseName)"""
+    }.mkString("\n")
+
+    s"""${doc}    enum $className(val value: String) {
+$cases
+
+      /** Convert to Cedar entity UID */
+      def toCedarEntityUid: CedarEntityUid = CedarEntityUid("$fullEntityType", value)
+    }
+
+    object $className {
+      /** Parse from string value */
+      def fromString(s: String): Option[$className] = s match {
+$fromStringCases
+        case _ => None
+      }
+
+      /** All enum values */
+      val values: List[$className] = List(${enumValues.map(v => toPascalCaseEnum(v)).mkString(", ")})
+
+      /** The Cedar entity type */
+      val entityType: String = "$fullEntityType"
+    }"""
+  }
+
+  /** Render a regular (non-enum) entity for the DSL.
+    */
+  private def renderRegularEntityForDsl(entity: EntityIR, namespace: String, principalTypes: Set[String]): String = {
+    val className = escapeIdent(entity.name) // Just "Xxx"
+    val fullEntityType = s"$namespace::${entity.name}"
+    val isPrincipal = principalTypes.contains(entity.name)
+
+    // Build field list: ID + parent IDs + attributes
+    // All IDs are now newtypes (generated in EntityIds.scala)
+    val idType = s"${entity.name}Id"
+    val idField = s"      id: $idType"
+
+    // Parent ID fields (immediate parent only, as that's what we need to resolve hierarchy)
+    val parentFields = entity.immediateParent.map { parentName =>
+      val parentType = s"${parentName}Id" // Generated newtype
+      s"      ${parentName.take(1).toLowerCase + parentName.drop(1)}Id: $parentType"
+    }.toList
+
+    // Attribute fields - for nested records, use the nested class name qualified with entity name
+    val attrFields = entity.attributes.map { attr =>
+      val scalaType = attr.nestedRecord match {
+        case Some(nested) =>
+          // Use the nested class name (it's declared inside the companion object)
+          val nestedType = s"$className.${nested.className}"
+          if (attr.optional) s"Option[$nestedType]" else nestedType
+        case None => attr.scalaType
+      }
+      s"      ${attr.fieldName}: $scalaType"
+    }
+
+    val allFields = (idField :: parentFields ++ attrFields).mkString(",\n")
+
+    val doc = entity.doc.map(d => s"    /** $d */\n").getOrElse("")
+
+    // Add PrincipalEntity trait extension if this is a principal
+    val principalExtension = if (isPrincipal) " extends PrincipalEntity" else ""
+
+    // All IDs are newtypes, so always use .value to extract string
+    val idToStringExpr = ".value"
+
+    // Build parent set for Cedar entity
+    val parentSet = entity.immediateParent match {
+      case Some(parentName) =>
+        val parentType = s"$namespace::$parentName"
+        val parentIdField = parentName.take(1).toLowerCase + parentName.drop(1) + "Id"
+        val quote = '"'
+        s"Set(CedarEntityUid($quote$parentType$quote, a.$parentIdField.value))"
+      case None =>
+        "Set.empty"
+    }
+
+    // Build attribute map
+    val attrMap = if (entity.attributes.nonEmpty) {
+      val attrs = entity.attributes.map { attr =>
+        val valueExpr = renderCedarValueExprWithPrefix("a.", attr, namespace, className)
+        val quote = '"'
+        s"$quote${attr.name}$quote -> $valueExpr"
+      }
+      s"Map(\n              ${attrs.mkString(",\n              ")}\n            )"
+    } else {
+      "Map.empty"
+    }
+
+    // Build getParentIds
+    val parentExtraction = entity.immediateParent match {
+      case Some(parentName) =>
+        val parentType = s"$namespace::$parentName"
+        val parentIdField = parentName.take(1).toLowerCase + parentName.drop(1) + "Id"
+        val quote = '"'
+        s"List($quote$parentType$quote -> a.$parentIdField.value)"
+      case None =>
+        "Nil"
+    }
+
+    // Generate nested case classes for record attributes
+    val nestedClasses = entity.attributes
+      .flatMap(_.nestedRecord)
+      .map { nested =>
+        renderNestedRecordClass(nested, namespace, className)
+      }
+      .mkString("\n")
+
+    s"""${doc}    final case class $className(
+$allFields
+    )$principalExtension
+
+    object $className {
+$nestedClasses
+      /** CedarEntityType instance for automatic conversion and type-safe registration */
+      implicit val cedarEntityType: CedarEntityType.Aux[$className, $idType] = new CedarEntityType[$className] {
+        type Id = $idType
+        val entityType: String = "$fullEntityType"
+
+        def toCedarEntity(a: $className): CedarEntity = CedarEntity(
+          entityType = entityType,
+          entityId = a.id$idToStringExpr,
+          parents = $parentSet,
+          attributes = $attrMap
+        )
+
+        def getParentIds(a: $className): List[(String, String)] = $parentExtraction
+      }
+    }"""
   }
 
   // ============================================================================
