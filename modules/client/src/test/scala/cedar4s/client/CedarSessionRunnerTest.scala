@@ -553,6 +553,78 @@ class CedarSessionRunnerTest extends FunSuite {
   }
 
   // ===========================================================================
+  // Entity UID Collision Tests
+  // ===========================================================================
+
+  // Resolver that enriches the principal with role=admin
+  val adminUserEntityType: CedarEntityType.Aux[TestUserEntity, String] =
+    new CedarEntityType[TestUserEntity] {
+      type Id = String
+      val entityType: String = "Test::User"
+      def toCedarEntity(a: TestUserEntity): CedarEntity = CedarEntity(
+        entityType = entityType,
+        entityId = a.id,
+        parents = Set.empty,
+        attributes = Map("role" -> CedarValue.string("admin"))
+      )
+      def getParentIds(a: TestUserEntity): List[(String, String)] = Nil
+    }
+
+  def adminSessionFor(user: TestUser, store: EntityStore[Future]): CedarSession[Future] = {
+    val resolver = CedarRuntime.resolverFrom[Future, TestUserEntity] { principal =>
+      Future.successful(Some(TestUserEntity(principal.entityId)))
+    }
+    implicit val et: CedarEntityType.Aux[TestUserEntity, String] = adminUserEntityType
+    CedarRuntime[Future, TestUserEntity](engine, store, resolver).session(user)
+  }
+
+  // Store that injects a weaker (no role) copy of the principal entity alongside the requested resource.
+  // This simulates a store returning an entity with the same UID as the principal but fewer attributes.
+  def storeWithPrincipalUidCollision(docId: String): EntityStore[Future] = new EntityStore[Future] {
+    override def loadForRequest(principal: CedarPrincipal, resource: ResourceRef): Future[CedarEntities] = {
+      val collidingEntity = CedarEntity("Test::User", "alice") // same UID as principal, no role
+      val docEntity = CedarEntity(
+        "Test::Document",
+        docId,
+        attributes = Map("owner" -> CedarValue.entity("Test::User", "bob"))
+      )
+      val folderEntity = CedarEntity("Test::Folder", "folder-1")
+      val resourceEntities = CedarEntities.fromSet(Set(collidingEntity, docEntity, folderEntity))
+      Future.successful(principal.entities ++ resourceEntities)
+    }
+    override def loadForBatch(principal: CedarPrincipal, resources: Seq[ResourceRef]): Future[CedarEntities] =
+      Future.successful(principal.entities)
+    override def loadEntity(entityType: String, entityId: String): Future[Option[CedarEntity]] =
+      Future.successful(None)
+    override def loadEntities(uids: Set[CedarEntityUid]): Future[CedarEntities] =
+        Future.successful(CedarEntities.empty)
+    override def loadEntityWithParents(
+        entityType: String,
+        entityId: String
+    ): Future[Option[(CedarEntity, List[(String, String)])]] =
+        Future.successful(None)
+  }
+
+  test("principal entity wins when store returns same UID with fewer attributes") {
+    // alice is resolved with role=admin; the store also returns Test::User::"alice" without role.
+    // The principal version must win so the admin permit fires.
+    implicit val runner: CedarSession[Future] =
+      adminSessionFor(TestUser("alice"), storeWithPrincipalUidCollision("doc-collision"))
+
+    val result = await(Document.Read("folder-1", "doc-collision").run)
+    assert(result.isRight, s"Principal with role=admin should be authorized: $result")
+  }
+
+  test("non-admin is still denied when there is no UID collision") {
+    // Sanity check: the same document, same store shape, but no role on the principal.
+    implicit val runner: CedarSession[Future] =
+      sessionFor(TestUser("alice"), storeWithPrincipalUidCollision("doc-no-admin"))
+
+    val result = await(Document.Read("folder-1", "doc-no-admin").run)
+    assert(result.isLeft, "Principal without role=admin should be denied")
+  }
+
+  // ===========================================================================
   // Error Handling Tests
   // ===========================================================================
 

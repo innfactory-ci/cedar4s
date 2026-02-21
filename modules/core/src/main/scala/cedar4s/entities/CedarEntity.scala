@@ -110,8 +110,17 @@ object CedarValue {
 final case class CedarEntities(
     entities: Set[CedarEntity] = Set.empty
 ) {
-  def +(entity: CedarEntity): CedarEntities = CedarEntities(entities + entity)
-  def ++(other: CedarEntities): CedarEntities = CedarEntities(entities ++ other.entities)
+  def +(entity: CedarEntity): CedarEntities = {
+    // If an entity with the same UID already exists, keep the existing one
+    if (entities.exists(_.uid == entity.uid)) this
+    else CedarEntities(entities + entity)
+  }
+  def ++(other: CedarEntities): CedarEntities = {
+    // Entities in `this` take precedence: skip any incoming entity whose UID is already present
+    val existingUids = entities.map(_.uid)
+    val incoming = other.entities.filterNot(e => existingUids.contains(e.uid))
+    CedarEntities(entities ++ incoming)
+  }
   def isEmpty: Boolean = entities.isEmpty
   def nonEmpty: Boolean = entities.nonEmpty
   def size: Int = entities.size
