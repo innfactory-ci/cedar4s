@@ -574,8 +574,9 @@ class CedarSessionRunnerTest extends FunSuite {
     val resolver = CedarRuntime.resolverFrom[Future, TestUserEntity] { principal =>
       Future.successful(Some(TestUserEntity(principal.entityId)))
     }
-    implicit val et: CedarEntityType.Aux[TestUserEntity, String] = adminUserEntityType
-    CedarRuntime[Future, TestUserEntity](engine, store, resolver).session(user)
+    // Pass adminUserEntityType explicitly to avoid ambiguous implicit with testUserEntityType
+    // (both are CedarEntityType.Aux[TestUserEntity, String]; explicit beats ambiguity in Scala 2.13)
+    CedarRuntime[Future, TestUserEntity](engine, store, resolver)(futureSync, adminUserEntityType).session(user)
   }
 
   // Store that injects a weaker (no role) copy of the principal entity alongside the requested resource.
